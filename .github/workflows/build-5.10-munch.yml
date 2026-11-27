@@ -52,22 +52,25 @@ jobs:
       - name: Fetch postmarketOS sm8250 config
         # The tree itself has no sm8250 defconfig (only generic defconfig).
         # The sm8250 config lives in pmaports:
-        #   device/community/linux-postmarketos-qcom-sm8250/config-postmarketos-qcom-sm8250.aarch64
+        #   device/testing/linux-postmarketos-qcom-sm8250/config-postmarketos-qcom-sm8250.aarch64
         # It is a full .config, not a defconfig target: copy it in, then olddefconfig.
-        # NOTE: the raw URL below was NOT directly verified (GitLab pages failed
-        # to load during research). If curl fails, fall back to a shallow
-        # pmaports clone. If both fail, the job fails loudly instead of
-        # silently building the wrong (generic) config.
+        # VERIFIED 2026-11-28: raw URL returns HTTP 200, 248924 bytes,
+        # 2758 CONFIG_ lines, "Linux/arm64 7.2.0". Default branch is main,
+        # and the package moved from device/community to device/testing.
+        # (run #1 failed here: old URL used gitlab.postmarketos.org + master
+        # + device/community, all three wrong: 404, then "Remote branch
+        # master not found".) If both fetch paths fail, the job fails loudly
+        # instead of silently building the wrong (generic) config.
         run: |
           set -e
-          CONFIG_URL="https://gitlab.postmarketos.org/postmarketOS/pmaports/-/raw/master/device/community/linux-postmarketos-qcom-sm8250/config-postmarketos-qcom-sm8250.aarch64"
+          CONFIG_URL="https://gitlab.nura.eco/postmarketOS/pmaports/-/raw/main/device/testing/linux-postmarketos-qcom-sm8250/config-postmarketos-qcom-sm8250.aarch64"
           if curl -fL -o linux/.config "$CONFIG_URL"; then
             echo "config: fetched via raw URL"
           else
             echo "config: raw URL failed, falling back to shallow pmaports clone"
-            git clone --depth 1 --single-branch --branch master \
-              https://gitlab.postmarketos.org/postmarketOS/pmaports.git pmaports
-            cp pmaports/device/community/linux-postmarketos-qcom-sm8250/config-postmarketos-qcom-sm8250.aarch64 linux/.config
+            git clone --depth 1 --single-branch --branch main \
+              https://gitlab.nura.eco/postmarketOS/pmaports.git pmaports
+            cp pmaports/device/testing/linux-postmarketos-qcom-sm8250/config-postmarketos-qcom-sm8250.aarch64 linux/.config
           fi
           test -s linux/.config
           grep -c '^CONFIG_' linux/.config
