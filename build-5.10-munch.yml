@@ -1,0 +1,148 @@
+# Build 5.10+ baseline for Redmi K40S (munch / sm8250) — learning project, stage 2
+#
+# Base tree (verified 2026-11-28):
+#   https://gitlab.nura.eco/soc/qualcomm-sm8250/linux.git  branch 7.2.0
+#   HEAD 71f4068cb254730bcf334cde9bdd6ca183e4fcd0 (2026-08-29), Makefile 7.2.0
+#   Old URL https://gitlab.postmarketos.org/soc/qualcomm-sm8250/linux.git redirects here.
+#
+# Honest scope of v1:
+#   - Pure mainline 7.2.0 + postmarketOS sm8250 config. NO KernelSU / SUSFS / BakaSU.
+#   - There is NO munch DTS in this tree yet, so v1 builds the generic sm8250
+#     Image.gz + all sm8250 dtbs + modules. It proves "it compiles", it does
+#     NOT prove "it boots HyperOS 4". A munch dtb appears only after
+#     dts/munch/sm8250-xiaomi-munch.dts is added to this repo (see step "munch DTS hook").
+#   - No dtbo.img: mainline builds produce single .dtb files, not Android dtbo.
+#   - No AnyKernel3 zip in v1: fastboot-bootable boot.img assembly comes later,
+#     once a munch dtb exists (mkbootimg step, stage 3).
+#
+# Toolchain: LLVM/Clang from Ubuntu 24.04 (clang-18). Kernel 7.2 only requires
+# Clang >= 17.0.1 (Documentation/process/changes.rst). alioth's Nix pins
+# llvmPackages_22, but that is alioth's choice, not a kernel requirement.
+# If a build fails on clang-18, the version is printed in the log first.
+name: Build 5.10 munch baseline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout this repo (workflow + patches + dts)
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git make bc bison flex libssl-dev libelf-dev \
+            python3 perl clang lld llvm dwarves kmod cpio rsync
+          clang --version
+          ld.lld --version
+          make --version | head -1
+
+      - name: Clone postmarketOS sm8250 kernel (7.2.0)
+        run: |
+          git clone --depth 1 --single-branch --branch 7.2.0 \
+            https://gitlab.nura.eco/soc/qualcomm-sm8250/linux.git linux
+          cd linux
+          git rev-parse HEAD
+          head -6 Makefile
+
+      - name: Fetch postmarketOS sm8250 config
+        # The tree itself has no sm8250 defconfig (only generic defconfig).
+        # The sm8250 config lives in pmaports:
+        #   device/community/linux-postmarketos-qcom-sm8250/config-postmarketos-qcom-sm8250.aarch64
+        # It is a full .config, not a defconfig target: copy it in, then olddefconfig.
+        # NOTE: the raw URL below was NOT directly verified (GitLab pages failed
+        # to load during research). If curl fails, fall back to a shallow
+        # pmaports clone. If both fail, the job fails loudly instead of
+        # silently building the wrong (generic) config.
+        run: |
+          set -e
+          CONFIG_URL="https://gitlab.postmarketos.org/postmarketOS/pmaports/-/raw/master/device/community/linux-postmarketos-qcom-sm8250/config-postmarketos-qcom-sm8250.aarch64"
+          if curl -fL -o linux/.config "$CONFIG_URL"; then
+            echo "config: fetched via raw URL"
+          else
+            echo "config: raw URL failed, falling back to shallow pmaports clone"
+            git clone --depth 1 --single-branch --branch master \
+              https://gitlab.postmarketos.org/postmarketOS/pmaports.git pmaports
+            cp pmaports/device/community/linux-postmarketos-qcom-sm8250/config-postmarketos-qcom-sm8250.aarch64 linux/.config
+          fi
+          test -s linux/.config
+          grep -c '^CONFIG_' linux/.config
+          head -5 linux/.config
+
+      - name: Apply local patches (if any)
+        run: |
+          cd linux
+          if ls ../patches/*.patch 1>/dev/null 2>&1; then
+            for p in ../patches/*.patch; do
+              echo "Applying $p"
+              git apply "$p"
+            done
+          else
+            echo "No patches/*.patch found, building unpatched tree."
+          fi
+
+      - name: munch DTS hook (optional, currently empty)
+        # First version with a real munch dtb: add
+        #   dts/munch/sm8250-xiaomi-munch.dts
+        # to THIS repo. This step copies it into the kernel tree and registers
+        # it in arch/arm64/boot/dts/qcom/Makefile. Until that file exists,
+        # this step is a no-op and the build produces only generic sm8250 dtbs.
+        # DO NOT guess reserved-memory addresses or panel timings here:
+        # wrong reserved-memory will not boot. See stage-1 gap report first.
+        run: |
+          if [ -f dts/munch/sm8250-xiaomi-munch.dts ]; then
+            cp dts/munch/sm8250-xiaomi-munch.dts linux/arch/arm64/boot/dts/qcom/
+            grep -q 'sm8250-xiaomi-munch.dtb' linux/arch/arm64/boot/dts/qcom/Makefile \
+              || echo 'dtb-$(CONFIG_ARCH_QCOM) += sm8250-xiaomi-munch.dtb' >> linux/arch/arm64/boot/dts/qcom/Makefile
+            echo "munch DTS: installed"
+          else
+            echo "munch DTS: not present yet, building generic sm8250 dtbs only."
+          fi
+
+      - name: Configure (olddefconfig)
+        run: |
+          cd linux
+          make LLVM=1 ARCH=arm64 olddefconfig
+          cp .config ../config-built.aarch64
+          grep -E '^(CONFIG_LOCALVERSION|CONFIG_MODULES|CONFIG_DEBUG_INFO_BTF)=' .config || true
+
+      - name: Build Image.gz, dtbs, modules
+        run: |
+          cd linux
+          make LLVM=1 ARCH=arm64 -j"$(nproc)" Image.gz dtbs modules
+          ls -lh arch/arm64/boot/Image arch/arm64/boot/Image.gz
+          ls arch/arm64/boot/dts/qcom/sm8250-*.dtb
+          find . -name '*.ko' | head -20
+          echo "module count: $(find . -name '*.ko' | wc -l)"
+
+      - name: Collect modules
+        run: |
+          cd linux
+          make LLVM=1 ARCH=arm64 modules_install INSTALL_MOD_PATH="$PWD/modules-out"
+          du -sh modules-out || true
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p out
+          cp linux/arch/arm64/boot/Image out/ || true
+          cp linux/arch/arm64/boot/Image.gz out/
+          cp linux/arch/arm64/boot/dts/qcom/sm8250-*.dtb out/
+          cp linux/.config out/config-built.aarch64
+          cp linux/System.map out/ || true
+          if [ -d linux/modules-out/lib/modules ]; then
+            tar -czf out/modules-7.2.0.tar.gz -C linux/modules-out lib/modules
+          else
+            echo "no modules installed (config may be monolithic)" > out/modules-README.txt
+          fi
+          ls -lh out/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: munch-510-baseline-7.2.0
+          path: out/
+          retention-days: 14
