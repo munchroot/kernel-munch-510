@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Xiaomi Redmi K40S (munch) — minimal mainline device tree, v1
+ *
+ * Scope of v1: COMPILE-ONLY + serial console + pstore. It proves the
+ * munch dtb builds against postmarketOS soc/qualcomm-sm8250 7.2.0.
+ * It does NOT prove boot: no display, no touch, no audio, no camera,
+ * no GPU, no Wi-Fi, no fingerprint, no sensors, no charging.
+ * Fastboot-boot testing comes only after the dtb builds (stage 3).
+ *
+ * Sources (all verified 2026-11-28, nothing guessed except where
+ * marked PROVISIONAL):
+ * - Base: mainline sm8250.dtsi from the 7.2.0 tree itself. It already
+ *   carries the full fixed-address reserved-memory table (hyp, xbl_aop,
+ *   cmd_db, smem, removed, camera/wlan/ipa/gpu/npu/video/cvp/cdsp/
+ *   slpi/adsp/spss, cdsp_secure_heap) and uart12 (serial@a90000,
+ *   qcom,geni-debug-uart, GIC_SPI 357, pinctrl qup_uart12_default
+ *   gpio34/35 function qup12). Do NOT re-copy that table here.
+ * - Debug UART = qupv3_se12_2uart (SE12, QUPV3 wrap1), from downstream
+ *   crDroid 15.0-munch kona-qupv3.dtsi:472 ("Debug UART Instance for
+ *   CDP/MTP platform"), enabled by kona-mtp.dtsi:11 and
+ *   xiaomi-sm8250-common.dtsi:8. Mainline name for the same block is
+ *   uart12 (serial@a90000). se2 (0x988000) is RUMI-only, not munch.
+ * - Extra reserved regions below are copied verbatim from the
+ *   downstream kona.dtsi reserved-memory table (15.0-munch), which
+ *   mainline sm8250.dtsi does NOT carry. munch has no munch-specific
+ *   reserved-memory overrides; it inherits the kona base.
+ * - Touch (for later, NOT in v1): focaltech,fts on qupv3_se4_spi,
+ *   CS0, 10 MHz, irq tlmm 39, reset tlmm 33, vdd 3.0 V (L10C),
+ *   vcc-io 1.8 V (L1C). Chip model (e.g. FT3658U) is NOT in any DTS,
+ *   do not write a model-specific compatible.
+ *
+ * PROVISIONAL (verify before any fastboot boot, compile is unaffected):
+ * - stdout-path baud 115200: downstream DTS has no stdout-path and no
+ *   console= anywhere; the real console params live in the bootloader
+ *   cmdline (/proc/cmdline on the live device, PC currently offline).
+ * - ramoops region 0x9e400000+0x100000: placed directly after the
+ *   downstream dfps_data region (ends 0x9e400000). Its address was
+ *   chosen, not measured; confirm against /proc/iomem before booting,
+ *   or a panic log may overwrite live memory (or be overwritten).
+ * - linux,cma / reusable ION pools from downstream are intentionally
+ *   NOT copied: mainline remoteproc does not use them.
+ */
+
+/dts-v1/;
+
+#include "sm8250.dtsi"
+
+/ {
+	model = "Xiaomi Redmi K40S (munch)";
+	compatible = "xiaomi,munch", "qcom,sm8250";
+	chassis-type = "handset";
+
+	aliases {
+		serial0 = &uart12;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	reserved-memory {
+		/* Downstream-only fixed regions, missing from mainline. */
+
+		reserved_xbl_uefi_log: res_xbl_uefi_log_region@80880000 {
+			compatible = "removed-dma-pool";
+			reg = <0x0 0x80880000 0x0 0x14000>;
+			no-map;
+		};
+
+		cont_splash_memory: cont_splash_region@9c000000 {
+			reg = <0x0 0x9c000000 0x0 0x02300000>;
+		};
+
+		dfps_data_memory: dfps_data_region@9e300000 {
+			reg = <0x0 0x9e300000 0x0 0x0100000>;
+		};
+
+		/* PROVISIONAL address, see header: verify vs /proc/iomem
+		 * before any fastboot boot. */
+		ramoops_mem: ramoops_region@9e400000 {
+			reg = <0x0 0x9e400000 0x0 0x100000>;
+			no-map;
+		};
+	};
+
+	ramoops {
+		compatible = "ramoops";
+		memory-region = <&ramoops_mem>;
+		record-size = <0x40000>;
+		console-size = <0x40000>;
+		ftrace-size = <0x20000>;
+		pmsg-size = <0x20000>;
+	};
+};
+
+/* QUPV3 wrap1 (0xac0000), the wrapper that holds uart12. */
+&qupv3_id_1 {
+	status = "okay";
+};
+
+/* Debug UART: se12, 0xa90000, qcom,geni-debug-uart. */
+&uart12 {
+	status = "okay";
+};
